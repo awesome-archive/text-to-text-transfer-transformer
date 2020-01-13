@@ -38,7 +38,8 @@ def bleu(targets, predictions):
   """Computes BLEU score.
 
   Args:
-    targets: list of strings
+    targets: list of strings or list of list of strings if multiple references
+      are present.
     predictions: list of strings
 
   Returns:
@@ -46,10 +47,14 @@ def bleu(targets, predictions):
   """
   # sacrebleu expects unicode
   predictions = [tf.compat.as_text(x) for x in predictions]
-  targets = [tf.compat.as_text(x) for x in targets]
 
-  # Need to wrap targets in another list for corpus_bleu.
-  targets = [targets]
+  if isinstance(targets[0], list):
+    targets = [[tf.compat.as_text(x) for x in target] for target in targets]
+  else:
+    targets = [tf.compat.as_text(x) for x in targets]
+    # Need to wrap targets in another list for corpus_bleu.
+    targets = [targets]
+
   bleu_score = sacrebleu.corpus_bleu(predictions, targets,
                                      smooth_method="exp",
                                      smooth_value=0.0,
@@ -195,14 +200,16 @@ def sequence_accuracy(targets, predictions):
   return {"sequence_accuracy": seq_acc}
 
 
-def pearson_corrcoef(x, y):
+def pearson_corrcoef(targets, predictions):
   """Pearson correlation coefficient."""
-  return {"pearson_corrcoef": 100 * scipy.stats.pearsonr(x, y)[0]}
+  return {"pearson_corrcoef":
+              100 * scipy.stats.pearsonr(targets, predictions)[0]}
 
 
-def spearman_corrcoef(x, y):
+def spearman_corrcoef(targets, predictions):
   """Spearman correlation coefficient."""
-  return {"spearman_corrcoef": 100 * scipy.stats.spearmanr(x, y)[0]}
+  return {"spearman_corrcoef":
+              100 * scipy.stats.spearmanr(targets, predictions)[0]}
 
 
 def matthews_corrcoef(targets, predictions):
@@ -213,13 +220,15 @@ def matthews_corrcoef(targets, predictions):
   }
 
 
-def mean_multiclass_f1(targets, predictions, num_classes):
+def mean_multiclass_f1(num_classes):
   """Computes the unweighted average of the F1 per class."""
-  return {
-      "mean_%dclass_f1" % num_classes: 100 * sklearn.metrics.fbeta_score(
-          targets, predictions, beta=1, labels=range(num_classes),
-          average="macro")
-  }
+  def my_metric(targets, predictions):
+    return {
+        "mean_%dclass_f1" % num_classes: 100 * sklearn.metrics.fbeta_score(
+            targets, predictions, beta=1, labels=range(num_classes),
+            average="macro")
+    }
+  return my_metric
 
 
 def exact_match(targets, predictions):
@@ -250,6 +259,11 @@ def mean_group_metric(metric_fn, group_key="group", value_key="value"):
   The sub-groups are defined by aggregating results (targets and predictions)
   by accessing the feature specified by `group_key` in the target dicts.
 
+  **WARNING**: Using this function can produce unreliable results if you do not
+  pass in full groups. For example, if you evaluate over a random subsample of a
+  validation set and do not retain all of the examples in each group, you may
+  get results which aren't directly comparable to using the full validation set.
+
   Args:
     metric_fn: function, the metric to compute on the subgroups.
     group_key: string, the key for the grouping value in the target dictionary.
@@ -268,3 +282,22 @@ def mean_group_metric(metric_fn, group_key="group", value_key="value"):
         group_scores[metric].append(score)
     return {metric: np.mean(scores) for metric, scores in group_scores.items()}
   return my_metric
+
+
+def multirc_f1_over_all_answers(targets, predictions):
+  """Special metric for MultiRC which computes F1 score over all examples.
+
+  This is necessary because the targets/predictions for MultiRC are dicts and
+  the f1_score_with_invalid expects a list of True/False labels, not dicts. As
+  a result we just need to key in the "value" for each of the example dicts
+  before feeding into f1_score_with_invalid.
+
+  Args:
+    targets: list of dicts, where each dict has a "value" key.
+    predictions: list of dicts, where each dict has a "value" key.
+  Returns:
+    F1 score over values, where any prediction != 0 or 1 is counted as wrong.
+  """
+  return f1_score_with_invalid(
+      [t["value"] for t in targets], [p["value"] for p in predictions]
+  )

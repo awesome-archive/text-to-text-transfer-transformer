@@ -63,14 +63,9 @@ class PreprocessorsTest(tf.test.TestCase):
     noise_mask = prep.random_spans_noise_mask(
         length, noise_density, mean_noise_span_length)
     output = self.evaluate(tf.cast(noise_mask, tf.int32))
-    if six.PY2:
-      expected_output = [
-          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-          1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1]
-    else:
-      expected_output = [
-          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1,
-          1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1]
+    expected_output = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1]
     self.assertAllEqual(output, expected_output)
 
   def test_noise_token_to_sentinel(self):
@@ -176,7 +171,7 @@ class PreprocessorsTest(tf.test.TestCase):
     if six.PY2:
       expected_output = [733, 999, 2, 3, 999, 5, 990, 999, 999, 999]
     else:
-      expected_output = [436, 999,   2,   3, 999,   5, 999, 999, 999, 999]
+      expected_output = [436, 999, 2, 3, 999, 5, 999, 999, 999, 999]
     output = self.evaluate(prep.noise_token_to_random_token_or_sentinel(
         tokens, noise_mask, vocabulary, random_prob=0.2))
     self.assertAllEqual(output, expected_output)
@@ -229,24 +224,22 @@ class PreprocessorsTest(tf.test.TestCase):
   def assertStringEqual(self, a, b):
     self.assertTrue(tf.equal(a, b), '%s != %s' % (a, b))
 
-  def test_clean_squad_text(self):
+  def test_pad_punctuation(self):
     self.assertStringEqual(
         ' " This is a string with " punctuation ( 1845 - 1986 ) " . ',
-        prep.clean_squad_text(
+        prep._pad_punctuation(
             '"This  is a string with "punctuation (1845-1986) ".'))
 
   def test_span_answer(self):
     self.assertStringEqual(
         'start: 2 end: 3',
-        prep.span_answer(tf.constant('Called the Denver Broncos.'),
-                         tf.constant('Denver Broncos'),
-                         prep.space_tok))
+        prep._span_answer(tf.constant('Called the Denver Broncos.'),
+                          tf.constant('Denver Broncos')))
     # Not found.
     self.assertStringEqual(
         '',
-        prep.span_answer(tf.constant('Called the Denver Broncos.'),
-                         tf.constant('Denver Bronscos'),
-                         prep.space_tok))
+        prep._span_answer(tf.constant('Called the Denver Broncos.'),
+                          tf.constant('Denver Bronscos')))
 
   def test_squad(self):
     og_dataset = tf.data.Dataset.from_tensors({
@@ -496,6 +489,7 @@ class PreprocessorsTest(tf.test.TestCase):
     dataset = prep.fill_in_the_blank(dataset)
     for data in test_utils.dataset_as_text(dataset):
       # Remove the prefix from the start of the input string
+      self.assertTrue(data['inputs'].startswith('fill: '))
       inp = data['inputs'].replace('fill: ', '')
       # Split output into chunks according to X locations.
       out_split = data['targets'].split('X')
@@ -564,7 +558,7 @@ class PreprocessorsTest(tf.test.TestCase):
   def test_split_text_to_words(self):
     dataset = tf.data.Dataset.from_tensor_slices(
         {'text': ['That good.', 'That.']})
-    dataset = prep.split_text_to_words(dataset)
+    dataset = prep._split_text_to_words(dataset)
     assert_dataset(
         dataset,
         {
@@ -992,6 +986,11 @@ class PreprocessorsTest(tf.test.TestCase):
     assert_dataset(dataset, [{'inputs': 1} for _ in range(5)])
     dataset = prep.take(og_dataset, -1)
     assert_dataset(dataset, [{'inputs': 1} for _ in range(100)])
+
+  def parse_tsv(self):
+    og_dataset = tf.data.Dataset.from_tensor_slices(['a\tb', 'c\td'])
+    dataset = prep.parse_tsv(og_dataset, field_names=['f1', 'f2'])
+    assert_dataset(dataset, [{'f1': 'a', 'f2': 'b'}, {'f1': 'c', 'f2': 'd'}])
 
 
 if __name__ == '__main__':

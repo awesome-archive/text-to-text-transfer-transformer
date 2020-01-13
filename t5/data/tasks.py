@@ -22,13 +22,13 @@ import functools
 
 from t5.data import postprocessors
 from t5.data import preprocessors
+from t5.data.utils import DEFAULT_SPM_PATH
 from t5.data.utils import set_global_cache_dirs
 from t5.data.utils import TaskRegistry
+from t5.data.utils import TfdsTask
 from t5.evaluation import metrics
 import tensorflow_datasets as tfds
 
-
-DEFAULT_SPM_PATH = "gs://t5-data/vocabs/cc_all.32000/sentencepiece.model"  # GCS
 
 
 
@@ -38,6 +38,7 @@ for config_suffix in _c4_config_suffixes:
   TaskRegistry.add(
       "c4{name}_v020_unsupervised".format(
           name=config_suffix.replace(".", "_")),
+      TfdsTask,
       tfds_name="c4/en{config}:1.0.0".format(config=config_suffix),
       text_preprocessor=functools.partial(
           preprocessors.rekey, key_map={"inputs": None, "targets": "text"}),
@@ -48,7 +49,9 @@ for config_suffix in _c4_config_suffixes:
 # ================================ Wikipedia ===================================
 TaskRegistry.add(
     "wikipedia_20190301.en_v003_unsupervised",
-    tfds_name="wikipedia/20190301.en:0.0.3",
+    TfdsTask,
+    # 0.0.4 is identical to 0.0.3 except empty records removed.
+    tfds_name="wikipedia/20190301.en:0.0.4",
     text_preprocessor=functools.partial(
         preprocessors.rekey, key_map={"inputs": None, "targets": "text"}),
     token_preprocessor=preprocessors.unsupervised,
@@ -73,8 +76,12 @@ def _get_glue_text_preprocessor(builder_config):
   elif builder_config.name == "record":
     return preprocessors.record
   else:
-    if "mnli" in builder_config.name:
+    if "mnli" in builder_config.name or builder_config.name == "ax":
+      # Cast the GLUE diagnostic task as MNLI.
       benchmark_name = "mnli"
+    elif builder_config.name in ["axb", "axg"]:
+      # Cast the SuperGLUE diagnostic tasks as RTE.
+      benchmark_name = "rte"
     else:
       benchmark_name = builder_config.name
     if builder_config.name == "multirc":
@@ -119,29 +126,25 @@ GLUE_METRICS = collections.OrderedDict([
     ("qnli", [metrics.accuracy]),
     ("rte", [metrics.accuracy]),
     ("wnli", [metrics.accuracy]),
+    ("ax", []),  # Only test set available.
 ])
 
 for b in tfds.text.glue.Glue.builder_configs.values():
-  if b == "rte":
-    text_preprocessor = [
-        functools.partial(
-            preprocessors.rekey,
-            key_map={"premise": "sentence1", "hypothesis": "sentence2"}),
-        _get_glue_text_preprocessor(b)]
-  else:
-    text_preprocessor = _get_glue_text_preprocessor(b)
   TaskRegistry.add(
       "glue_%s_v002" % b.name,
-      tfds_name="glue/%s:0.0.2" % b.name,
-      text_preprocessor=text_preprocessor,
+      TfdsTask,
+      tfds_name="glue/%s:%s" % (b.name, "1.0.0" if b.name == "ax" else "0.0.2"),
+      text_preprocessor=_get_glue_text_preprocessor(b),
       metric_fns=GLUE_METRICS[b.name],
       sentencepiece_model_path=DEFAULT_SPM_PATH,
       postprocess_fn=_get_glue_postprocess_fn(b),
+      splits=["test"] if b.name == "ax" else None,
   )
 
 # =============================== CNN DailyMail ================================
 TaskRegistry.add(
     "cnn_dailymail_v002",
+    TfdsTask,
     tfds_name="cnn_dailymail/plain_text:0.0.2",
     text_preprocessor=functools.partial(preprocessors.summarize,
                                         article_key="article",
@@ -167,6 +170,7 @@ b_configs = [
 for prefix, b, tfds_version in b_configs:
   TaskRegistry.add(
       "wmt%s_%s%s_v003" % (prefix, b.language_pair[1], b.language_pair[0]),
+      TfdsTask,
       tfds_name="wmt%s_translate/%s:%s" % (prefix, b.name, tfds_version),
       text_preprocessor=functools.partial(
           preprocessors.translate,
@@ -180,6 +184,7 @@ for prefix, b, tfds_version in b_configs:
 b = tfds.translate.wmt_t2t.WmtT2tTranslate.builder_configs["de-en"]
 TaskRegistry.add(
     "wmt_t2t_ende_v003",
+    TfdsTask,
     tfds_name="wmt_t2t_translate/de-en:0.0.1",
     text_preprocessor=functools.partial(
         preprocessors.translate,
@@ -193,34 +198,53 @@ TaskRegistry.add(
 SUPERGLUE_METRICS = collections.OrderedDict([
     ("boolq", [metrics.accuracy]),
     ("cb", [
-        functools.partial(metrics.mean_multiclass_f1, num_classes=3),
+        metrics.mean_multiclass_f1(num_classes=3),
         metrics.accuracy
     ]),
     ("copa", [metrics.accuracy]),
     ("multirc", [
-        metrics.mean_group_metric(metrics.f1_score_with_invalid),
+        metrics.multirc_f1_over_all_answers,
         metrics.mean_group_metric(metrics.exact_match)
     ]),
     ("record", [metrics.qa]),
     ("rte", [metrics.accuracy]),
     ("wic", [metrics.accuracy]),
+    ("axb", []),  # Only test set available.
+    ("axg", []),  # Only test set available.
 ])
 
 for b in tfds.text.super_glue.SuperGlue.builder_configs.values():
   # We use a simplified version of WSC, defined below
   if "wsc" in b.name:
     continue
+  if b.name == "axb":
+    text_preprocessor = [
+        functools.partial(
+            preprocessors.rekey,
+            key_map={
+                "premise": "sentence1",
+                "hypothesis": "sentence2",
+                "label": "label",
+                "idx": "idx",
+            }),
+        _get_glue_text_preprocessor(b)
+    ]
+  else:
+    text_preprocessor = _get_glue_text_preprocessor(b)
   TaskRegistry.add(
       "super_glue_%s_v102" % b.name,
+      TfdsTask,
       tfds_name="super_glue/%s:1.0.2" % b.name,
-      text_preprocessor=_get_glue_text_preprocessor(b),
+      text_preprocessor=text_preprocessor,
       metric_fns=SUPERGLUE_METRICS[b.name],
       sentencepiece_model_path=DEFAULT_SPM_PATH,
-      postprocess_fn=_get_glue_postprocess_fn(b))
+      postprocess_fn=_get_glue_postprocess_fn(b),
+      splits=["test"] if b.name in ["axb", "axg"] else None)
 
 # ======================== Definite Pronoun Resolution =========================
 TaskRegistry.add(
     "dpr_v001_simple",
+    TfdsTask,
     tfds_name="definite_pronoun_resolution/plain_text:0.0.1",
     text_preprocessor=preprocessors.definite_pronoun_resolution_simple,
     metric_fns=[metrics.accuracy],
@@ -229,6 +253,7 @@ TaskRegistry.add(
 # =================================== WSC ======================================
 TaskRegistry.add(
     "super_glue_wsc_v102_simple_train",
+    TfdsTask,
     tfds_name="super_glue/wsc.fixed:1.0.2",
     text_preprocessor=functools.partial(
         preprocessors.wsc_simple, correct_referent_only=True),
@@ -237,6 +262,7 @@ TaskRegistry.add(
     splits=["train"])
 TaskRegistry.add(
     "super_glue_wsc_v102_simple_eval",
+    TfdsTask,
     tfds_name="super_glue/wsc.fixed:1.0.2",
     text_preprocessor=functools.partial(
         preprocessors.wsc_simple, correct_referent_only=False),
@@ -248,6 +274,7 @@ TaskRegistry.add(
 # =================================== WNLI =====================================
 TaskRegistry.add(
     "glue_wnli_v002_simple_eval",
+    TfdsTask,
     tfds_name="glue/wnli:0.0.2",
     text_preprocessor=preprocessors.wnli_simple,
     postprocess_fn=postprocessors.wsc_simple,
@@ -259,8 +286,20 @@ TaskRegistry.add(
 # Maximized evaluation metrics over all answers.
 TaskRegistry.add(
     "squad_v010_allanswers",
+    TfdsTask,
     tfds_name="squad/plain_text:0.1.0",
     text_preprocessor=preprocessors.squad,
+    postprocess_fn=postprocessors.qa,
+    metric_fns=[metrics.qa],
+    sentencepiece_model_path=DEFAULT_SPM_PATH)
+
+# Maximized evaluation metrics over all answers.
+TaskRegistry.add(
+    "squad_v010_context_free",
+    TfdsTask,
+    tfds_name="squad/plain_text:0.1.0",
+    text_preprocessor=functools.partial(
+        preprocessors.squad, include_context=False),
     postprocess_fn=postprocessors.qa,
     metric_fns=[metrics.qa],
     sentencepiece_model_path=DEFAULT_SPM_PATH)
@@ -268,6 +307,7 @@ TaskRegistry.add(
 # Squad span prediction task instead of text.
 TaskRegistry.add(
     "squad_v010_allanswers_span",
+    TfdsTask,
     tfds_name="squad/plain_text:0.1.0",
     text_preprocessor=preprocessors.squad_span_space_tokenized,
     postprocess_fn=postprocessors.span_qa,
@@ -277,6 +317,7 @@ TaskRegistry.add(
 # Deprecated: Use `squad_v010_allanswers` instead.
 TaskRegistry.add(
     "squad_v010",
+    TfdsTask,
     tfds_name="squad/plain_text:0.1.0",
     text_preprocessor=preprocessors.squad,
     metric_fns=[metrics.qa],
@@ -285,6 +326,7 @@ TaskRegistry.add(
 # ================================= TriviaQA ===================================
 TaskRegistry.add(
     "trivia_qa_v010",
+    TfdsTask,
     tfds_name="trivia_qa:0.1.0",
     text_preprocessor=preprocessors.trivia_qa,
     metric_fns=[],

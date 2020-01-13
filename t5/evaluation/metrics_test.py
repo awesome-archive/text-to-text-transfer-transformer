@@ -20,17 +20,10 @@ from __future__ import print_function
 
 from absl.testing import absltest
 from t5.evaluation import metrics
+from t5.evaluation import test_utils
 
 
-class MetricsTest(absltest.TestCase):
-
-  def assertDictClose(self, a, b, delta=None):
-    self.assertCountEqual(a.keys(), b.keys())
-    for k in a:
-      try:
-        self.assertAlmostEqual(a[k], b[k], delta=delta)
-      except AssertionError as e:
-        raise AssertionError(str(e) + " for key '%s'" % k)
+class MetricsTest(test_utils.BaseMetricsTest):
 
   def test_same_bleu(self):
     ref = "this is a string"
@@ -43,6 +36,12 @@ class MetricsTest(absltest.TestCase):
     self.assertDictClose(
         metrics.bleu([ref, ref], ["", ""]),
         {"bleu": 0})
+
+  def test_multiple_references_bleu(self):
+    ref = "this is a string"
+    self.assertDictClose(
+        metrics.bleu([["", ref], [ref, ""]], [ref, ref]),
+        {"bleu": 100})
 
   def test_same_rouge(self):
     ref = "this is a string"
@@ -166,7 +165,7 @@ class MetricsTest(absltest.TestCase):
 
   def test_multiclass_f1(self):
     self.assertDictClose(
-        metrics.mean_multiclass_f1([0, 1, 1, 2], [0, 0, 2, 2], num_classes=3),
+        metrics.mean_multiclass_f1(num_classes=3)([0, 1, 1, 2], [0, 0, 2, 2]),
         {"mean_3class_f1": 44.44444444444444})
 
   def test_exact_match(self):
@@ -211,6 +210,18 @@ class MetricsTest(absltest.TestCase):
              {"value": 0},
              {"value": 1}]),
         {"accuracy": 25.})
+
+  def test_multirc_f1_over_all_answers(self):
+    metric_fn = metrics.multirc_f1_over_all_answers
+    self.assertDictClose(
+        metric_fn(
+            [{"group": "a", "value": 1},
+             {"group": "a", "value": 1},
+             {"group": "b", "value": 0}],
+            [{"value": 1},
+             {"value": 0},
+             {"value": 1}]),
+        {"f1": 50.})
 
 
 if __name__ == "__main__":
